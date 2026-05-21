@@ -1,0 +1,102 @@
+{
+  "name": "llm-local-runner",
+  "displayName": "LLM Local Runner",
+  "description": "Run local LLMs via Ollama with an OpenAI-compatible proxy and dashboard",
+  "version": "0.1.0",
+  "publisher": "xirvo",
+  "license": "MIT",
+  "author": {
+    "name": "Xirvo",
+    "url": "https://xirvo.co"
+  },
+  "homepage": "https://xirvo.co",
+  "bugs": {
+    "url": "https://xirvo.co"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xirvo/llm-local-runner"
+  },
+  "galleryBanner": {
+    "color": "#0f1117",
+    "theme": "dark"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "ollama",
+    "llm",
+    "local",
+    "openai",
+    "llama"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "llmRunner.openPanel",
+        "title": "LLM Runner: Open Dashboard"
+      },
+      {
+        "command": "llmRunner.startModel",
+        "title": "LLM Runner: Start Model"
+      },
+      {
+        "command": "llmRunner.stopModel",
+        "title": "LLM Runner: Stop Model"
+      },
+      {
+        "command": "llmRunner.regenerateKey",
+        "title": "LLM Runner: Regenerate API Key"
+      },
+      {
+        "command": "llmRunner.copyApiKey",
+        "title": "LLM Runner: Copy API Key"
+      }
+    ],
+    "configuration": {
+      "title": "LLM Runner",
+      "properties": {
+        "llmRunner.proxyPort": {
+          "type": "number",
+          "default": 11435,
+          "description": "Port your app connects to (OpenAI-compatible proxy)"
+        },
+        "llmRunner.ollamaPort": {
+          "type": "number",
+          "default": 11434,
+          "description": "Ollama daemon port"
+        },
+        "llmRunner.defaultModel": {
+          "type": "string",
+          "default": "llama3",
+          "description": "Default model to load on start"
+        },
+        "llmRunner.autoStart": {
+          "type": "boolean",
+          "default": false,
+          "description": "Start the model when VS Code opens"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}
