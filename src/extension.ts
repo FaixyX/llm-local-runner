@@ -10,6 +10,8 @@ let keyManager: ApiKeyManager;
 let ollamaManager: OllamaManager;
 let proxyServer: ProxyServer;
 
+const SETUP_COMPLETE_KEY = 'llmRunner.setupComplete';
+
 // Mutable dashboard state
 let state: PanelState = {
   modelName: 'llama3',
@@ -21,10 +23,18 @@ let state: PanelState = {
   proxyRunning: false,
   logs: [],
   availableModels: [],
+  setupComplete: false,
+  firstRunHint: true,
 };
+
+let extensionContext: vscode.ExtensionContext;
 
 // ─── Activate ───────────────────────────────────────────────────────────────
 export async function activate(context: vscode.ExtensionContext) {
+  extensionContext = context;
+  state.setupComplete = context.globalState.get<boolean>(SETUP_COMPLETE_KEY, false);
+  state.firstRunHint = !state.setupComplete;
+
   // Read config
   const cfg = vscode.workspace.getConfiguration('llmRunner');
   state.proxyPort = cfg.get<number>('proxyPort', 11435);
@@ -68,14 +78,14 @@ export async function activate(context: vscode.ExtensionContext) {
 
     vscode.commands.registerCommand('llmRunner.regenerateKey', () => {
       state.apiKey = keyManager.regenerate();
-      pushLog('API key regenerated.');
+      pushLog('API key regenerated — update your projects if needed.');
       refreshPanel();
-      vscode.window.showInformationMessage(`New API key generated. Update your projects.`);
     }),
 
     vscode.commands.registerCommand('llmRunner.copyApiKey', async () => {
       await vscode.env.clipboard.writeText(state.apiKey);
-      vscode.window.showInformationMessage('API key copied to clipboard!');
+      pushLog('API key copied to clipboard.');
+      refreshPanel();
     })
   );
 
@@ -153,43 +163,36 @@ function refreshPanel() {
   panel.webview.html = buildWebviewHtml(panel.webview, state);
 }
 
-// ─── Start model flow ────────────────────────────────────────────────────────
+// ─── Start model flow (one click — progress stays in the panel, no modals) ───
 async function startModel() {
-  if (state.modelStatus === 'running' || state.modelStatus === 'pulling') return;
+  const busy = ['running', 'pulling', 'installing'] as const;
+  if (busy.includes(state.modelStatus as typeof busy[number])) return;
 
   pushLog(`Starting ${state.modelName}…`);
+  state.modelStatus = state.setupComplete ? 'idle' : 'installing';
   refreshPanel();
 
-  // 1. Ensure Ollama + model
-  const { ok, message } = await ollamaManager.ensureModelReady(state.modelName);
+  const { ok, message } = await ollamaManager.ensureModelReady(state.modelName, pushLog);
 
   if (!ok) {
     state.modelStatus = 'error';
     pushLog(`✗ ${message}`);
     refreshPanel();
-    vscode.window.showErrorMessage(`LLM Runner: ${message}`);
     return;
   }
 
-  // 2. Start proxy
   try {
     await proxyServer.start();
     state.proxyRunning = true;
     state.modelStatus = 'running';
-    pushLog(`✓ Proxy live on http://localhost:${state.proxyPort}`);
+    state.setupComplete = true;
+    state.firstRunHint = false;
+    await extensionContext.globalState.update(SETUP_COMPLETE_KEY, true);
+
+    pushLog(`✓ Ready! Proxy → http://localhost:${state.proxyPort}`);
     pushLog(`✓ API key: ${state.apiKey.slice(0, 12)}…`);
-    refreshPanel();
+    pushLog('Next time: click Start and you are done.');
 
-    vscode.window.showInformationMessage(
-      `${state.modelName} is running! Proxy → localhost:${state.proxyPort}`,
-      'Copy API Key'
-    ).then((choice) => {
-      if (choice === 'Copy API Key') {
-        vscode.env.clipboard.writeText(state.apiKey);
-      }
-    });
-
-    // Refresh model list
     state.availableModels = await ollamaManager.listLocalModels();
     refreshPanel();
   } catch (err: unknown) {
@@ -197,7 +200,6 @@ async function startModel() {
     state.modelStatus = 'error';
     pushLog(`✗ Proxy failed: ${msg}`);
     refreshPanel();
-    vscode.window.showErrorMessage(`LLM Runner proxy error: ${msg}`);
   }
 }
 

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 
 export interface PanelState {
   modelName: string;
-  modelStatus: 'idle' | 'not_installed' | 'not_running' | 'pulling' | 'running' | 'error';
+  modelStatus: 'idle' | 'not_installed' | 'not_running' | 'installing' | 'pulling' | 'running' | 'error';
   pullProgress: number;
   proxyPort: number;
   ollamaPort: number;
@@ -10,6 +10,10 @@ export interface PanelState {
   proxyRunning: boolean;
   logs: string[];
   availableModels: string[];
+  /** True after a successful first Start */
+  setupComplete: boolean;
+  /** Show one-time first-run banner in the panel */
+  firstRunHint: boolean;
 }
 
 /** Build the full webview HTML for the LLM Runner dashboard */
@@ -21,20 +25,22 @@ export function buildWebviewHtml(
 
   const statusColor: Record<string, string> = {
     idle: '#6b7280',
-    not_installed: '#ef4444',
+    not_installed: '#f59e0b',
     not_running: '#f59e0b',
+    installing: '#3b82f6',
     pulling: '#3b82f6',
     running: '#22c55e',
     error: '#ef4444',
   };
 
   const statusLabel: Record<string, string> = {
-    idle: 'Idle',
-    not_installed: 'Ollama Not Installed',
-    not_running: 'Ollama Not Running',
-    pulling: `Pulling… ${state.pullProgress}%`,
+    idle: 'Ready — click Start',
+    not_installed: 'Setting up…',
+    not_running: 'Starting Ollama…',
+    installing: 'First-time setup…',
+    pulling: `Downloading model… ${state.pullProgress}%`,
     running: 'Running',
-    error: 'Error',
+    error: 'Something went wrong — click Start to retry',
   };
 
   const logLines = state.logs
@@ -46,12 +52,13 @@ export function buildWebviewHtml(
     .map((m) => `<option value="${m}" ${m === state.modelName ? 'selected' : ''}>${m}</option>`)
     .join('');
 
-  const progressBar =
-    state.modelStatus === 'pulling'
-      ? `<div class="progress-track"><div class="progress-fill" style="width:${state.pullProgress}%"></div></div>`
+  const showProgress = state.modelStatus === 'pulling' || state.modelStatus === 'installing';
+  const progressPct = state.modelStatus === 'installing' ? (state.pullProgress || 15) : state.pullProgress;
+  const progressBar = showProgress
+      ? `<div class="progress-track"><div class="progress-fill" style="width:${progressPct}%"></div></div>`
       : '';
 
-  const startDisabled = state.modelStatus === 'running' || state.modelStatus === 'pulling';
+  const startDisabled = ['running', 'pulling', 'installing'].includes(state.modelStatus);
   const stopDisabled = state.modelStatus !== 'running';
 
   const exampleCode = `// OpenAI SDK — drop-in compatible
@@ -366,6 +373,16 @@ console.log(response.choices[0].message.content);`;
     line-height: 1.6;
   }
   .tip a { color: #fbbf24; }
+  .tip-info {
+    background: #0c1a4d;
+    border-color: #1d4ed8;
+    color: #93c5fd;
+  }
+  .tip-ok {
+    background: #052e16;
+    border-color: #16a34a;
+    color: #86efac;
+  }
 
   /* ── Scrollbar ───────────────────────────────────────── */
   ::-webkit-scrollbar { width: 4px; height: 4px; }
@@ -391,7 +408,7 @@ console.log(response.choices[0].message.content);`;
     <div class="card">
       <div class="card-title">Model Status</div>
       <div class="status-row">
-        <div class="dot ${state.modelStatus === 'pulling' || state.modelStatus === 'running' ? 'pulse' : ''}"
+        <div class="dot ${['pulling', 'installing', 'running'].includes(state.modelStatus) ? 'pulse' : ''}"
              style="background:${statusColor[state.modelStatus] ?? '#6b7280'}"></div>
         <span class="status-text">${statusLabel[state.modelStatus] ?? 'Unknown'}</span>
       </div>
@@ -428,12 +445,17 @@ console.log(response.choices[0].message.content);`;
     </div>
 
     ${
-      state.modelStatus === 'not_installed'
-        ? `<div class="tip">
-            ⚠️ <strong>Ollama not found.</strong><br>
-            Install it from <a href="https://ollama.com">ollama.com</a>, then click Start again.
+      state.firstRunHint && !state.setupComplete
+        ? `<div class="tip tip-info">
+            <strong>One click to start.</strong><br>
+            First time only: we install Ollama and download your model — this can take several minutes.<br>
+            Watch progress in <em>Proxy Logs</em>. After that, just press <strong>Start</strong>.
            </div>`
-        : ''
+        : state.setupComplete
+          ? `<div class="tip tip-ok">
+              ✓ Setup complete. Press <strong>Start</strong> anytime to run your local LLM.
+             </div>`
+          : ''
     }
 
   </div>

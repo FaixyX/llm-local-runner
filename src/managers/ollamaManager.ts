@@ -1,8 +1,15 @@
 import * as http from 'http';
 import * as vscode from 'vscode';
 import { exec, spawn, ChildProcess } from 'child_process';
+import { installOllama, resolveOllamaPath, InstallProgress } from './ollamaInstaller';
 
-export type ModelStatus = 'not_installed' | 'not_running' | 'pulling' | 'running' | 'error';
+export type ModelStatus =
+  | 'not_installed'
+  | 'not_running'
+  | 'installing'
+  | 'pulling'
+  | 'running'
+  | 'error';
 
 export interface ModelInfo {
   name: string;
@@ -13,6 +20,7 @@ export interface ModelInfo {
 
 export class OllamaManager {
   private ollamaProcess: ChildProcess | null = null;
+  private ollamaBin: string | null = null;
   private _onStatusChange = new vscode.EventEmitter<ModelInfo>();
   readonly onStatusChange = this._onStatusChange.event;
 
@@ -20,6 +28,12 @@ export class OllamaManager {
 
   get baseUrl(): string {
     return `http://localhost:${this.ollamaPort}`;
+  }
+
+  private async getOllamaBin(): Promise<string | null> {
+    if (this.ollamaBin) return this.ollamaBin;
+    this.ollamaBin = await resolveOllamaPath();
+    return this.ollamaBin;
   }
 
   /** Check if Ollama daemon is reachable */
@@ -36,9 +50,7 @@ export class OllamaManager {
 
   /** Check if Ollama CLI is installed */
   async isOllamaInstalled(): Promise<boolean> {
-    return new Promise((resolve) => {
-      exec('ollama --version', (err) => resolve(!err));
-    });
+    return (await this.getOllamaBin()) !== null;
   }
 
   /** List locally available models */
@@ -69,22 +81,24 @@ export class OllamaManager {
 
   /** Try to start Ollama daemon (if it's installed but not running) */
   async startOllamaDaemon(): Promise<boolean> {
+    const bin = await this.getOllamaBin();
+    if (!bin) return false;
+
     return new Promise((resolve) => {
-      const proc = spawn('ollama', ['serve'], {
+      const proc = spawn(bin, ['serve'], {
         detached: true,
         stdio: 'ignore',
       });
       this.ollamaProcess = proc;
       proc.unref();
 
-      // Give it 3 seconds to come up
       let attempts = 0;
       const interval = setInterval(async () => {
         attempts++;
         if (await this.isOllamaRunning()) {
           clearInterval(interval);
           resolve(true);
-        } else if (attempts >= 6) {
+        } else if (attempts >= 12) {
           clearInterval(interval);
           resolve(false);
         }
@@ -118,7 +132,6 @@ export class OllamaManager {
         let buffer = '';
         res.on('data', (chunk: Buffer) => {
           buffer += chunk.toString();
-          // Ollama streams newline-delimited JSON
           const lines = buffer.split('\n');
           buffer = lines.pop() ?? '';
           for (const line of lines) {
@@ -153,33 +166,59 @@ export class OllamaManager {
     });
   }
 
-  /** Full setup flow: ensure Ollama is running + model is available */
-  async ensureModelReady(modelName: string): Promise<{ ok: boolean; message: string }> {
-    const installed = await this.isOllamaInstalled();
+  /** Full one-click setup: install Ollama (if needed), start daemon, pull model */
+  async ensureModelReady(
+    modelName: string,
+    onLog: InstallProgress
+  ): Promise<{ ok: boolean; message: string }> {
+    let installed = await this.isOllamaInstalled();
+
     if (!installed) {
-      return {
-        ok: false,
-        message: 'Ollama is not installed. Visit https://ollama.com to install it, then try again.',
-      };
+      this._onStatusChange.fire({ name: modelName, status: 'installing', pullProgress: 0 });
+      onLog('First run: installing Ollama and downloading your model may take several minutes.');
+      onLog('Later runs are one click — just press Start.');
+
+      const didInstall = await installOllama(onLog);
+      this.ollamaBin = await resolveOllamaPath();
+      installed = !!this.ollamaBin;
+
+      if (!didInstall && !installed) {
+        return {
+          ok: false,
+          message: 'Ollama install is still in progress or was cancelled. Click Start again when ready.',
+        };
+      }
+      if (!installed) {
+        return { ok: false, message: 'Could not detect Ollama after install. Click Start to retry.' };
+      }
+      onLog('✓ Ollama installed.');
     }
 
     let running = await this.isOllamaRunning();
     if (!running) {
+      onLog('Starting Ollama…');
       const started = await this.startOllamaDaemon();
       if (!started) {
-        return { ok: false, message: 'Could not start Ollama. Try running `ollama serve` in a terminal.' };
+        return { ok: false, message: 'Could not start Ollama. Click Start to retry.' };
       }
+      onLog('✓ Ollama is running.');
       running = true;
     }
 
     const available = await this.isModelAvailable(modelName);
     if (!available) {
+      onLog(`Downloading model "${modelName}"…`);
       const pulled = await this.pullModel(modelName);
       if (!pulled) {
-        return { ok: false, message: `Failed to pull model "${modelName}". Check your internet connection.` };
+        return {
+          ok: false,
+          message: `Failed to download "${modelName}". Check your connection and click Start again.`,
+        };
       }
+      onLog(`✓ Model "${modelName}" is ready.`);
     } else {
       this._onStatusChange.fire({ name: modelName, status: 'running' });
+      onLog(`✓ Model "${modelName}" already on disk.`);
     }
 
     return { ok: true, message: `${modelName} is ready.` };
